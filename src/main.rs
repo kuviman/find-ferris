@@ -11,6 +11,22 @@ struct Config {
     pub min_drag_distance: f32,
     pub fov: f32,
     pub drag_start_timer: f64, // TODO: Duration
+    pub crab_speed: f32,
+    pub road_node_ui_radius: f32,
+}
+
+type NodeId = usize;
+
+#[derive(Deserialize)]
+struct RoadNode {
+    pos: vec2<f32>,
+    connected: Vec<NodeId>,
+}
+
+#[derive(geng::asset::Load, Deserialize)]
+#[load(json)]
+struct Roads {
+    nodes: Vec<RoadNode>,
 }
 
 #[derive(geng::asset::Load)]
@@ -18,6 +34,17 @@ struct Assets {
     pub ferris_pirate: ugli::Texture,
     pub ground: ugli::Texture,
     pub obstacles: ugli::Texture,
+    pub roads: Roads,
+}
+
+struct Crab {
+    from: NodeId,
+    to: NodeId,
+    distance: f32,
+}
+
+struct RoadEditor {
+    drag_from: Option<usize>,
 }
 
 struct Game {
@@ -27,6 +54,8 @@ struct Game {
     drag: Drag,
     config: Config,
     assets: Assets,
+    crab: Crab,
+    road_editor: RoadEditor,
 }
 
 impl Game {
@@ -42,16 +71,53 @@ impl Game {
             },
             drag: Drag::None,
             config,
+            crab: Crab {
+                from: 0,
+                to: 1,
+                distance: 0.0,
+            },
+            road_editor: RoadEditor { drag_from: None },
         }
+    }
+
+    fn hovered_road_node(&self) -> Option<NodeId> {
+        let cursor = self.camera.screen_to_world(
+            self.framebuffer_size,
+            self.geng.window().cursor_position().map(|x| x as f32),
+        );
+        self.assets
+            .roads
+            .nodes
+            .iter()
+            .position(|node| (node.pos - cursor).len() < self.config.road_node_ui_radius)
     }
 }
 
 impl geng::State for Game {
     fn update(&mut self, delta_time: f64) {
+        let delta_time = delta_time as f32;
+
         if let Drag::Detecting { from, timer } = &self.drag {
             if timer.elapsed().as_secs_f64() > self.config.drag_start_timer {
-                self.drag = Drag::Dragging { prev_mouse_pos: *from };
+                self.drag = Drag::Dragging {
+                    prev_mouse_pos: *from,
+                };
             }
+        }
+
+        let crab = &mut self.crab;
+        crab.distance += self.config.crab_speed * delta_time;
+        if crab.distance
+            > (self.assets.roads.nodes[crab.from].pos - self.assets.roads.nodes[crab.to].pos).len()
+        {
+            *crab = Crab {
+                from: crab.to,
+                to: *self.assets.roads.nodes[crab.to]
+                    .connected
+                    .choose(&mut thread_rng())
+                    .unwrap(),
+                distance: 0.0,
+            };
         }
     }
     fn draw(&mut self, framebuffer: &mut ugli::Framebuffer) {
@@ -70,8 +136,55 @@ impl geng::State for Game {
         };
 
         draw_sprite(&self.assets.ground, vec2::ZERO);
-        draw_sprite(&self.assets.ferris_pirate, vec2(300.0, -200.0));
+        {
+            let crab = &self.crab;
+            let from = self.assets.roads.nodes[crab.from].pos;
+            let to = self.assets.roads.nodes[crab.to].pos;
+            let pos = from + (to - from).normalize() * crab.distance;
+            draw_sprite(&self.assets.ferris_pirate, pos);
+        }
         draw_sprite(&self.assets.obstacles, vec2::ZERO);
+
+        // Road editor
+        for node in &self.assets.roads.nodes {
+            self.geng.draw2d().draw2d(
+                framebuffer,
+                &self.camera,
+                &draw2d::Ellipse::circle(node.pos, self.config.road_node_ui_radius, Rgba::GREEN),
+            );
+        }
+        for from in &self.assets.roads.nodes {
+            for &to in &from.connected {
+                let to = &self.assets.roads.nodes[to];
+                self.geng.draw2d().draw2d(
+                    framebuffer,
+                    &self.camera,
+                    &draw2d::Segment::new_gradient(
+                        draw2d::ColoredVertex {
+                            a_pos: from.pos,
+                            a_color: Rgba::BLUE,
+                        },
+                        draw2d::ColoredVertex {
+                            a_pos: to.pos,
+                            a_color: Rgba::RED,
+                        },
+                        self.config.road_node_ui_radius * 0.5,
+                    ),
+                );
+            }
+        }
+        if let Some(index) = self.hovered_road_node() {
+            self.geng.draw2d().draw2d(
+                framebuffer,
+                &self.camera,
+                &draw2d::Ellipse::circle_with_cut(
+                    self.assets.roads.nodes[index].pos,
+                    self.config.road_node_ui_radius * 1.1,
+                    self.config.road_node_ui_radius * 1.2,
+                    Rgba::new(1.0, 1.0, 1.0, 0.5),
+                ),
+            );
+        }
     }
     fn handle_event(&mut self, event: geng::Event) {
         let world_pos = |screen_pos| {
@@ -110,6 +223,46 @@ impl geng::State for Game {
                 }
                 self.drag = Drag::None;
             }
+            geng::Event::KeyDown { key } => {
+                let cursor_world =
+                    world_pos(self.geng.window().cursor_position().map(|x| x as f32));
+                match key {
+                    geng::Key::N => self.assets.roads.nodes.push(RoadNode {
+                        pos: cursor_world,
+                        connected: default(),
+                    }),
+                    geng::Key::E => {
+                        // TODO make engine not send repeated key or smth
+                        if self.road_editor.drag_from.is_none() {
+                            self.road_editor.drag_from = dbg!(self.hovered_road_node());
+                        }
+                    }
+                    geng::Key::Delete => {
+                        if let Some(index) = self.hovered_road_node() {
+                            self.assets.roads.nodes.remove(index);
+                            for node in &mut self.assets.roads.nodes {
+                                node.connected.retain(|v| *v != index);
+                                for to in &mut node.connected {
+                                    if *to > index {
+                                        *to -= 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            geng::Event::KeyUp { key } => match key {
+                geng::Key::E => {
+                    if let Some(from) = self.road_editor.drag_from.take() {
+                        if let Some(to) = self.hovered_road_node() {
+                            self.assets.roads.nodes[from].connected.push(to);
+                        }
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
