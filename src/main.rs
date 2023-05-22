@@ -17,13 +17,13 @@ struct Config {
 
 type NodeId = usize;
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct RoadNode {
     pos: vec2<f32>,
     connected: Vec<NodeId>,
 }
 
-#[derive(geng::asset::Load, Deserialize)]
+#[derive(geng::asset::Load, Serialize, Deserialize)]
 #[load(json)]
 struct Roads {
     nodes: Vec<RoadNode>,
@@ -39,12 +39,13 @@ struct Assets {
 
 struct Crab {
     from: NodeId,
-    to: NodeId,
+    to: Option<NodeId>,
     distance: f32,
 }
 
 struct RoadEditor {
     drag_from: Option<usize>,
+    shown: bool,
 }
 
 struct Game {
@@ -54,7 +55,7 @@ struct Game {
     drag: Drag,
     config: Config,
     assets: Assets,
-    crab: Crab,
+    crabs: Vec<Crab>,
     road_editor: RoadEditor,
 }
 
@@ -71,12 +72,11 @@ impl Game {
             },
             drag: Drag::None,
             config,
-            crab: Crab {
-                from: 0,
-                to: 1,
-                distance: 0.0,
+            crabs: vec![],
+            road_editor: RoadEditor {
+                drag_from: None,
+                shown: true,
             },
-            road_editor: RoadEditor { drag_from: None },
         }
     }
 
@@ -105,19 +105,23 @@ impl geng::State for Game {
             }
         }
 
-        let crab = &mut self.crab;
-        crab.distance += self.config.crab_speed * delta_time;
-        if crab.distance
-            > (self.assets.roads.nodes[crab.from].pos - self.assets.roads.nodes[crab.to].pos).len()
-        {
-            *crab = Crab {
-                from: crab.to,
-                to: *self.assets.roads.nodes[crab.to]
-                    .connected
-                    .choose(&mut thread_rng())
-                    .unwrap(),
-                distance: 0.0,
-            };
+        for crab in &mut self.crabs {
+            if let Some(to) = crab.to {
+                crab.distance += self.config.crab_speed * delta_time;
+                if crab.distance
+                    > (self.assets.roads.nodes[crab.from].pos - self.assets.roads.nodes[to].pos)
+                        .len()
+                {
+                    *crab = Crab {
+                        from: to,
+                        to: self.assets.roads.nodes[to]
+                            .connected
+                            .choose(&mut thread_rng())
+                            .copied(),
+                        distance: 0.0,
+                    };
+                }
+            }
         }
     }
     fn draw(&mut self, framebuffer: &mut ugli::Framebuffer) {
@@ -136,54 +140,62 @@ impl geng::State for Game {
         };
 
         draw_sprite(&self.assets.ground, vec2::ZERO);
-        {
-            let crab = &self.crab;
+        for crab in &self.crabs {
             let from = self.assets.roads.nodes[crab.from].pos;
-            let to = self.assets.roads.nodes[crab.to].pos;
+            let to = match crab.to {
+                Some(to) => self.assets.roads.nodes[to].pos,
+                None => from,
+            };
             let pos = from + (to - from).normalize() * crab.distance;
             draw_sprite(&self.assets.ferris_pirate, pos);
         }
         draw_sprite(&self.assets.obstacles, vec2::ZERO);
 
         // Road editor
-        for node in &self.assets.roads.nodes {
-            self.geng.draw2d().draw2d(
-                framebuffer,
-                &self.camera,
-                &draw2d::Ellipse::circle(node.pos, self.config.road_node_ui_radius, Rgba::GREEN),
-            );
-        }
-        for from in &self.assets.roads.nodes {
-            for &to in &from.connected {
-                let to = &self.assets.roads.nodes[to];
+        if self.road_editor.shown {
+            for node in &self.assets.roads.nodes {
                 self.geng.draw2d().draw2d(
                     framebuffer,
                     &self.camera,
-                    &draw2d::Segment::new_gradient(
-                        draw2d::ColoredVertex {
-                            a_pos: from.pos,
-                            a_color: Rgba::BLUE,
-                        },
-                        draw2d::ColoredVertex {
-                            a_pos: to.pos,
-                            a_color: Rgba::RED,
-                        },
-                        self.config.road_node_ui_radius * 0.5,
+                    &draw2d::Ellipse::circle(
+                        node.pos,
+                        self.config.road_node_ui_radius,
+                        Rgba::GREEN,
                     ),
                 );
             }
-        }
-        if let Some(index) = self.hovered_road_node() {
-            self.geng.draw2d().draw2d(
-                framebuffer,
-                &self.camera,
-                &draw2d::Ellipse::circle_with_cut(
-                    self.assets.roads.nodes[index].pos,
-                    self.config.road_node_ui_radius * 1.1,
-                    self.config.road_node_ui_radius * 1.2,
-                    Rgba::new(1.0, 1.0, 1.0, 0.5),
-                ),
-            );
+            for from in &self.assets.roads.nodes {
+                for &to in &from.connected {
+                    let to = &self.assets.roads.nodes[to];
+                    self.geng.draw2d().draw2d(
+                        framebuffer,
+                        &self.camera,
+                        &draw2d::Segment::new_gradient(
+                            draw2d::ColoredVertex {
+                                a_pos: from.pos,
+                                a_color: Rgba::BLUE,
+                            },
+                            draw2d::ColoredVertex {
+                                a_pos: to.pos,
+                                a_color: Rgba::RED,
+                            },
+                            self.config.road_node_ui_radius * 0.5,
+                        ),
+                    );
+                }
+            }
+            if let Some(index) = self.hovered_road_node() {
+                self.geng.draw2d().draw2d(
+                    framebuffer,
+                    &self.camera,
+                    &draw2d::Ellipse::circle_with_cut(
+                        self.assets.roads.nodes[index].pos,
+                        self.config.road_node_ui_radius * 1.1,
+                        self.config.road_node_ui_radius * 1.2,
+                        Rgba::new(1.0, 1.0, 1.0, 0.5),
+                    ),
+                );
+            }
         }
     }
     fn handle_event(&mut self, event: geng::Event) {
@@ -227,6 +239,7 @@ impl geng::State for Game {
                 let cursor_world =
                     world_pos(self.geng.window().cursor_position().map(|x| x as f32));
                 match key {
+                    geng::Key::Tab => self.road_editor.shown = !self.road_editor.shown,
                     geng::Key::N => self.assets.roads.nodes.push(RoadNode {
                         pos: cursor_world,
                         connected: default(),
@@ -249,6 +262,26 @@ impl geng::State for Game {
                                 }
                             }
                         }
+                    }
+                    geng::Key::Space => {
+                        let from = thread_rng().gen_range(0..self.assets.roads.nodes.len());
+                        let to = self.assets.roads.nodes[from]
+                            .connected
+                            .choose(&mut thread_rng())
+                            .copied();
+                        let distance = 0.0;
+                        self.crabs.push(Crab { from, to, distance });
+                    }
+                    geng::Key::R => {
+                        self.crabs.clear();
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    geng::Key::S if self.geng.window().is_key_pressed(geng::Key::LCtrl) => {
+                        let mut f = std::io::BufWriter::new(
+                            std::fs::File::create(run_dir().join("assets").join("roads.json"))
+                                .unwrap(),
+                        );
+                        serde_json::to_writer(&mut f, &self.assets.roads).unwrap();
                     }
                     _ => {}
                 }

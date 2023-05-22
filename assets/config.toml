@@ -1,5 +1,5 @@
 min_drag_distance = 10
 drag_start_timer = 0.5
-fov = 1000
+fov = 3000
 crab_speed = 100
 road_node_ui_radius = 20
