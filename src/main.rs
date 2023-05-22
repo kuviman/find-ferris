@@ -9,6 +9,15 @@ enum Drag {
 #[derive(Deserialize)]
 struct Config {
     pub min_drag_distance: f32,
+    pub fov: f32,
+    pub drag_start_timer: f64, // TODO: Duration
+}
+
+#[derive(geng::asset::Load)]
+struct Assets {
+    pub ferris_pirate: ugli::Texture,
+    pub ground: ugli::Texture,
+    pub obstacles: ugli::Texture,
 }
 
 struct Game {
@@ -17,49 +26,52 @@ struct Game {
     camera: geng::Camera2d,
     drag: Drag,
     config: Config,
+    assets: Assets,
 }
 
 impl Game {
-    pub fn new(geng: &Geng, config: Config) -> Self {
+    pub fn new(geng: &Geng, assets: Assets, config: Config) -> Self {
         Self {
-            config,
+            assets,
             geng: geng.clone(),
             framebuffer_size: vec2::splat(1.0),
             camera: geng::Camera2d {
                 center: vec2::ZERO,
                 rotation: 0.0,
-                fov: 10.0,
+                fov: config.fov,
             },
             drag: Drag::None,
+            config,
         }
     }
 }
 
 impl geng::State for Game {
+    fn update(&mut self, delta_time: f64) {
+        if let Drag::Detecting { from, timer } = &self.drag {
+            if timer.elapsed().as_secs_f64() > self.config.drag_start_timer {
+                self.drag = Drag::Dragging { prev_mouse_pos: *from };
+            }
+        }
+    }
     fn draw(&mut self, framebuffer: &mut ugli::Framebuffer) {
         self.framebuffer_size = framebuffer.size().map(|x| x as f32);
         ugli::clear(framebuffer, Some(Rgba::BLACK), None, None);
-        const N: i32 = 10;
-        for i in -N..=N {
+
+        let mut draw_sprite = |texture: &ugli::Texture, pos: vec2<f32>| {
             self.geng.draw2d().draw2d(
                 framebuffer,
                 &self.camera,
-                &draw2d::Segment::new(
-                    Segment(vec2(i as f32, -N as f32), vec2(i as f32, N as f32)),
-                    0.1,
-                    Rgba::GRAY,
+                &draw2d::TexturedQuad::new(
+                    Aabb2::point(pos).extend_symmetric(texture.size().map(|x| x as f32) / 2.0),
+                    texture,
                 ),
             );
-            self.geng.draw2d().draw2d(
-                framebuffer,
-                &self.camera,
-                &draw2d::Segment::new(
-                    Segment(vec2(-N as f32, i as f32), vec2(N as f32, i as f32)),
-                    0.1,
-                    Rgba::GRAY,
-                ),
-            );
-        }
+        };
+
+        draw_sprite(&self.assets.ground, vec2::ZERO);
+        draw_sprite(&self.assets.ferris_pirate, vec2(300.0, -200.0));
+        draw_sprite(&self.assets.obstacles, vec2::ZERO);
     }
     fn handle_event(&mut self, event: geng::Event) {
         let world_pos = |screen_pos| {
@@ -111,6 +123,11 @@ fn main() {
         let config = file::load_detect(run_dir().join("assets").join("config.toml"))
             .await
             .unwrap();
-        Game::new(&geng, config)
+        let assets = geng
+            .asset_manager()
+            .load(run_dir().join("assets"))
+            .await
+            .unwrap();
+        Game::new(&geng, assets, config)
     });
 }

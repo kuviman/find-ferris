@@ -1,1 +1,3 @@
 min_drag_distance = 10
+drag_start_timer = 0.5
+fov = 1000
