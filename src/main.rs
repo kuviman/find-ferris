@@ -46,7 +46,7 @@ struct Crab {
     distance: f32,
 }
 
-struct RoadEditor {
+struct Editor {
     drag_from: Option<usize>,
     shown: bool,
 }
@@ -59,7 +59,7 @@ struct Game {
     config: Config,
     assets: Assets,
     crabs: Vec<Crab>,
-    road_editor: RoadEditor,
+    editor: Editor,
 }
 
 impl Game {
@@ -76,7 +76,7 @@ impl Game {
             drag: Drag::None,
             config,
             crabs: vec![],
-            road_editor: RoadEditor {
+            editor: Editor {
                 drag_from: None,
                 shown: true,
             },
@@ -174,7 +174,7 @@ impl geng::State for Game {
         draw_sprite(&self.assets.obstacles, vec2::ZERO);
 
         // Road editor
-        if self.road_editor.shown {
+        if self.editor.shown {
             for node in &self.assets.roads.nodes {
                 self.geng.draw2d().draw2d(
                     framebuffer,
@@ -269,15 +269,15 @@ impl geng::State for Game {
                 let cursor_world =
                     world_pos(self.geng.window().cursor_position().map(|x| x as f32));
                 match key {
-                    geng::Key::Tab => self.road_editor.shown = !self.road_editor.shown,
+                    geng::Key::Tab => self.editor.shown = !self.editor.shown,
                     geng::Key::N => self.assets.roads.nodes.push(RoadNode {
                         pos: cursor_world,
                         connected: default(),
                     }),
                     geng::Key::E => {
                         // TODO make engine not send repeated key or smth
-                        if self.road_editor.drag_from.is_none() {
-                            self.road_editor.drag_from = dbg!(self.hovered_road_node());
+                        if self.editor.drag_from.is_none() {
+                            self.editor.drag_from = dbg!(self.hovered_road_node());
                         }
                     }
                     geng::Key::Delete => {
@@ -318,7 +318,7 @@ impl geng::State for Game {
             }
             geng::Event::KeyUp { key } => match key {
                 geng::Key::E => {
-                    if let Some(from) = self.road_editor.drag_from.take() {
+                    if let Some(from) = self.editor.drag_from.take() {
                         if let Some(to) = self.hovered_road_node() {
                             self.assets.roads.nodes[from].connected.push(to);
                         }
