@@ -9,10 +9,13 @@ enum Drag {
 #[derive(Deserialize)]
 struct Config {
     pub min_drag_distance: f32,
-    pub fov: f32,
+    pub default_fov: f32,
     pub drag_start_timer: f64, // TODO: Duration
     pub crab_speed: f32,
     pub road_node_ui_radius: f32,
+    pub zoom_speed: f32,
+    pub min_fov: f32,
+    pub max_fov: f32,
 }
 
 type NodeId = usize;
@@ -68,7 +71,7 @@ impl Game {
             camera: geng::Camera2d {
                 center: vec2::ZERO,
                 rotation: 0.0,
-                fov: config.fov,
+                fov: config.default_fov,
             },
             drag: Drag::None,
             config,
@@ -234,6 +237,14 @@ impl geng::State for Game {
                     log::info!("Clicked at {pos:?}");
                 }
                 self.drag = Drag::None;
+            }
+            geng::Event::Wheel { delta } => {
+                let cursor = self.geng.window().cursor_position().map(|x| x as f32);
+                let prev_world_cursor = world_pos(cursor);
+                self.camera.fov = (self.camera.fov * self.config.zoom_speed.powf(-delta as f32))
+                    .clamp(self.config.min_fov, self.config.max_fov);
+                let new_world_cursor = self.camera.screen_to_world(self.framebuffer_size, cursor);
+                self.camera.center += prev_world_cursor - new_world_cursor;
             }
             geng::Event::KeyDown { key } => {
                 let cursor_world =
