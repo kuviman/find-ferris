@@ -94,6 +94,23 @@ impl Game {
             .iter()
             .position(|node| (node.pos - cursor).len() < self.config.road_node_ui_radius)
     }
+
+    fn clamp_camera(&mut self) {
+        let map_size = self.assets.ground.size().map(|x| x as f32);
+        self.camera.fov = self
+            .camera
+            .fov
+            .min(map_size.y as f32)
+            .min(map_size.x / self.framebuffer_size.aspect());
+
+        let possible_positions = Aabb2::ZERO
+            .extend_symmetric(map_size / 2.0)
+            .extend_symmetric(-vec2(
+                self.camera.fov / 2.0 * self.framebuffer_size.aspect(),
+                self.camera.fov / 2.0,
+            ));
+        self.camera.center = self.camera.center.clamp_aabb(possible_positions);
+    }
 }
 
 impl geng::State for Game {
@@ -130,6 +147,8 @@ impl geng::State for Game {
     fn draw(&mut self, framebuffer: &mut ugli::Framebuffer) {
         self.framebuffer_size = framebuffer.size().map(|x| x as f32);
         ugli::clear(framebuffer, Some(Rgba::BLACK), None, None);
+
+        self.clamp_camera();
 
         let mut draw_sprite = |texture: &ugli::Texture, pos: vec2<f32>| {
             self.geng.draw2d().draw2d(
