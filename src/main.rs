@@ -16,6 +16,12 @@ struct Config {
     pub zoom_speed: f32,
     pub min_fov: f32,
     pub max_fov: f32,
+    pub animation_speed: f32,
+    pub jump_height: f32,
+    pub jump_rotation_amplitude: f32,
+    pub collision_check_distance: f32,
+    pub collision_check_radius: f32,
+    pub collision_slow_down: f32,
 }
 
 type NodeId = usize;
@@ -32,6 +38,17 @@ struct Roads {
     nodes: Vec<RoadNode>,
 }
 
+impl Roads {
+    pub fn world_pos(&self, position: &Position) -> vec2<f32> {
+        let from = self.nodes[position.from].pos;
+        let to = match position.to {
+            Some(to) => self.nodes[to].pos,
+            None => from,
+        };
+        from + (to - from).normalize() * position.distance
+    }
+}
+
 #[derive(geng::asset::Load)]
 struct Assets {
     pub ferris_pirate: ugli::Texture,
@@ -40,10 +57,15 @@ struct Assets {
     pub roads: Roads,
 }
 
-struct Crab {
+struct Position {
     from: NodeId,
     to: Option<NodeId>,
     distance: f32,
+}
+
+struct Crab {
+    position: Position,
+    animation_time: f32,
 }
 
 struct Editor {
@@ -125,14 +147,37 @@ impl geng::State for Game {
             }
         }
 
-        for crab in &mut self.crabs {
-            if let Some(to) = crab.to {
-                crab.distance += self.config.crab_speed * delta_time;
-                if crab.distance
-                    > (self.assets.roads.nodes[crab.from].pos - self.assets.roads.nodes[to].pos)
+        for crab_index in 0..self.crabs.len() {
+            let slow_down = {
+                let mut slow_down = 1.0;
+                let crab = &self.crabs[crab_index];
+                let front_pos = self.assets.roads.world_pos(&Position {
+                    distance: crab.position.distance + self.config.collision_check_distance,
+                    ..crab.position
+                });
+                for other_index in 0..self.crabs.len() {
+                    if other_index == crab_index {
+                        continue;
+                    }
+                    let pos = self
+                        .assets
+                        .roads
+                        .world_pos(&self.crabs[other_index].position);
+                    if (front_pos - pos).len() < self.config.collision_check_radius {
+                        slow_down *= self.config.collision_slow_down;
+                    }
+                }
+                slow_down
+            };
+            let crab = &mut self.crabs[crab_index];
+            let position = &mut crab.position;
+            if let Some(to) = position.to {
+                position.distance += self.config.crab_speed / slow_down * delta_time;
+                if position.distance
+                    > (self.assets.roads.nodes[position.from].pos - self.assets.roads.nodes[to].pos)
                         .len()
                 {
-                    *crab = Crab {
+                    *position = Position {
                         from: to,
                         to: self.assets.roads.nodes[to]
                             .connected
@@ -142,6 +187,8 @@ impl geng::State for Game {
                     };
                 }
             }
+
+            crab.animation_time += self.config.animation_speed * delta_time;
         }
     }
     fn draw(&mut self, framebuffer: &mut ugli::Framebuffer) {
@@ -150,28 +197,42 @@ impl geng::State for Game {
 
         self.clamp_camera();
 
-        let mut draw_sprite = |texture: &ugli::Texture, pos: vec2<f32>| {
+        let mut draw_sprite = |texture: &ugli::Texture, transform: mat3<f32>| {
             self.geng.draw2d().draw2d(
                 framebuffer,
                 &self.camera,
                 &draw2d::TexturedQuad::new(
-                    Aabb2::point(pos).extend_symmetric(texture.size().map(|x| x as f32) / 2.0),
+                    Aabb2::point(vec2::ZERO)
+                        .extend_symmetric(texture.size().map(|x| x as f32) / 2.0),
                     texture,
-                ),
+                )
+                .transform(transform),
             );
         };
 
-        draw_sprite(&self.assets.ground, vec2::ZERO);
+        draw_sprite(&self.assets.ground, mat3::identity());
         for crab in &self.crabs {
-            let from = self.assets.roads.nodes[crab.from].pos;
-            let to = match crab.to {
-                Some(to) => self.assets.roads.nodes[to].pos,
-                None => from,
-            };
-            let pos = from + (to - from).normalize() * crab.distance;
-            draw_sprite(&self.assets.ferris_pirate, pos);
+            let pos = self.assets.roads.world_pos(&crab.position);
+            draw_sprite(
+                &self.assets.ferris_pirate,
+                mat3::translate(
+                    pos + vec2(
+                        0.0,
+                        crab.animation_time.cos().abs() * self.config.jump_height,
+                    ),
+                ) * mat3::rotate(crab.animation_time.sin() * self.config.jump_rotation_amplitude),
+            );
         }
-        draw_sprite(&self.assets.obstacles, vec2::ZERO);
+        draw_sprite(&self.assets.obstacles, mat3::identity());
+
+        // for crab in &self.crabs {
+        //     let pos = self.assets.roads.world_pos(&crab.position);
+        //     self.geng.draw2d().draw2d(
+        //         framebuffer,
+        //         &self.camera,
+        //         &draw2d::Ellipse::circle(pos, self.config.collision_check_radius, Rgba::RED),
+        //     );
+        // }
 
         // Road editor
         if self.editor.shown {
@@ -300,7 +361,10 @@ impl geng::State for Game {
                             .choose(&mut thread_rng())
                             .copied();
                         let distance = 0.0;
-                        self.crabs.push(Crab { from, to, distance });
+                        self.crabs.push(Crab {
+                            position: Position { from, to, distance },
+                            animation_time: thread_rng().gen(),
+                        });
                     }
                     geng::Key::R => {
                         self.crabs.clear();
