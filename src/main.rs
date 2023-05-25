@@ -8,6 +8,7 @@ enum Drag {
 
 #[derive(Deserialize)]
 struct Config {
+    pub crabs: usize,
     pub min_drag_distance: f32,
     pub default_fov: f32,
     pub drag_start_timer: f64, // TODO: Duration
@@ -38,12 +39,18 @@ struct Roads {
     nodes: Vec<RoadNode>,
 }
 
+fn fix_roads(roads: &mut Roads) {
+    for (index, node) in roads.nodes.iter_mut().enumerate() {
+        node.connected.retain(|&other| other != index);
+    }
+}
+
 impl Roads {
     pub fn world_pos(&self, position: &Position) -> vec2<f32> {
         let from = self.nodes[position.from].pos;
         let to = match position.to {
             Some(to) => self.nodes[to].pos,
-            None => from,
+            None => return from,
         };
         from + (to - from).normalize() * position.distance
     }
@@ -54,6 +61,7 @@ struct Assets {
     pub ferris_pirate: ugli::Texture,
     pub ground: ugli::Texture,
     pub obstacles: ugli::Texture,
+    #[load(postprocess = "fix_roads")]
     pub roads: Roads,
 }
 
@@ -86,8 +94,8 @@ struct Game {
 
 impl Game {
     pub fn new(geng: &Geng, assets: Assets, config: Config) -> Self {
-        Self {
-            assets,
+        let crabs_count = config.crabs;
+        let mut result = Self {
             geng: geng.clone(),
             framebuffer_size: vec2::splat(1.0),
             camera: geng::Camera2d {
@@ -96,13 +104,18 @@ impl Game {
                 fov: config.default_fov,
             },
             drag: Drag::None,
-            config,
             crabs: vec![],
+            config,
+            assets,
             editor: Editor {
                 drag_from: None,
-                shown: true,
+                shown: false,
             },
+        };
+        for _ in 0..crabs_count {
+            result.spawn_crab();
         }
+        result
     }
 
     fn hovered_road_node(&self) -> Option<NodeId> {
@@ -132,6 +145,28 @@ impl Game {
                 self.camera.fov / 2.0,
             ));
         self.camera.center = self.camera.center.clamp_aabb(possible_positions);
+    }
+
+    fn spawn_crab(&mut self) {
+        let from = thread_rng().gen_range(0..self.assets.roads.nodes.len());
+        let to = self.assets.roads.nodes[from]
+            .connected
+            .choose(&mut thread_rng())
+            .copied();
+        let distance = match to {
+            Some(to) => {
+                assert!(to != from);
+                thread_rng().gen_range(
+                    0.0..(self.assets.roads.nodes[from].pos - self.assets.roads.nodes[to].pos)
+                        .len(),
+                )
+            }
+            None => 0.0,
+        };
+        self.crabs.push(Crab {
+            position: Position { from, to, distance },
+            animation_time: thread_rng().gen(),
+        });
     }
 }
 
@@ -211,7 +246,11 @@ impl geng::State for Game {
         };
 
         draw_sprite(&self.assets.ground, mat3::identity());
-        for crab in &self.crabs {
+        let mut crab_indices: Vec<usize> = (0..self.crabs.len()).collect();
+        crab_indices
+            .sort_by_key(|index| -r32(self.assets.roads.world_pos(&self.crabs[*index].position).y));
+        for index in crab_indices {
+            let crab = &self.crabs[index];
             let pos = self.assets.roads.world_pos(&crab.position);
             draw_sprite(
                 &self.assets.ferris_pirate,
@@ -355,16 +394,7 @@ impl geng::State for Game {
                         }
                     }
                     geng::Key::Space => {
-                        let from = thread_rng().gen_range(0..self.assets.roads.nodes.len());
-                        let to = self.assets.roads.nodes[from]
-                            .connected
-                            .choose(&mut thread_rng())
-                            .copied();
-                        let distance = 0.0;
-                        self.crabs.push(Crab {
-                            position: Position { from, to, distance },
-                            animation_time: thread_rng().gen(),
-                        });
+                        self.spawn_crab();
                     }
                     geng::Key::R => {
                         self.crabs.clear();

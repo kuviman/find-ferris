@@ -12,3 +12,4 @@ jump_rotation_amplitude = 0.1
 collision_check_distance = 50
 collision_check_radius = 50
 collision_slow_down = 2
+crabs = 100
