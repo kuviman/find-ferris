@@ -1,19 +1,25 @@
 # https://scvalex.net/posts/63/
 {
   inputs = {
-    naersk.url = "github:nmattia/naersk/master";
+    naersk.url = "github:nix-community/naersk/master";
+    rust-overlay.url = "github:oxalica/rust-overlay";
     # This must be the stable nixpkgs if you're running the app on a
     # stable NixOS install.  Mixing EGL library versions doesn't work.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, utils, naersk, ... }:
+  outputs = { self, nixpkgs, utils, naersk, rust-overlay, ... }:
     utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
-        naersk-lib = pkgs.callPackage naersk { };
-        name = "getting-farted-on";
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs { inherit system overlays; };
+        rust-toolchain = pkgs.rust-bin.stable."1.69.0".minimal;
+        naersk-lib = pkgs.callPackage naersk {
+          rustc = rust-toolchain;
+          cargo = rust-toolchain;
+        };
+        name = "find-ferris";
         waylandDeps = with pkgs; [
           libxkbcommon
           wayland
@@ -35,13 +41,35 @@
         libPath = pkgs.lib.makeLibraryPath libDeps;
       in
       {
-        defaultPackage = naersk-lib.buildPackage {
+        # defaultPackage = naersk-lib.buildPackage {
+        #   singleStep = true;
+        #   src = ./.;
+        #   doCheck = true;
+        #   pname = name;
+        #   nativeBuildInputs = nativeBuildDeps ++ [ pkgs.makeWrapper ];
+        #   buildInputs = buildDeps;
+        #   postInstall = ''
+        #     wrapProgram "$out/bin/${name}" --prefix LD_LIBRARY_PATH : "${libPath}"
+        #   '';
+        # };
+        defaultPackage = pkgs.rustPlatform.buildRustPackage {
+          name = name;
           src = ./.;
-          doCheck = true;
-          pname = name;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = let geng-version = "0.14.0"; in {
+              "batbox-${geng-version}" = "sha256-9cbbiLRIjBxb9vc1ldYAXJnr6Jwo+vqyQjNNCDGMZeM=";
+              "gilrs-0.10.2" = "sha256-qy0heow6rd8D4anVWfZCHetE4xhLPLXrJSPKJKESh1g=";
+              "rodio-0.17.0" = "sha256-nF2cOoPnlfvPkA3JdQPab29YzyKfUEnuF00yJGnVbV8=";
+            };
+          };
           nativeBuildInputs = nativeBuildDeps ++ [ pkgs.makeWrapper ];
-          buildInputs = buildDeps;
+          buildInputs = buildDeps ++ [ rust-toolchain ];
+          preBuild = ''
+            cargo build --release
+          '';
           postInstall = ''
+            cp -r ${./assets} $out/bin/assets
             wrapProgram "$out/bin/${name}" --prefix LD_LIBRARY_PATH : "${libPath}"
           '';
         };
