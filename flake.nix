@@ -70,7 +70,9 @@
           '';
           postInstall = ''
             cp -r ${./assets} $out/bin/assets
-            wrapProgram "$out/bin/${name}" --prefix LD_LIBRARY_PATH : "${libPath}"
+            wrapProgram "$out/bin/${name}" \
+              --set WINIT_UNIX_BACKEND x11 \
+              --prefix LD_LIBRARY_PATH : "${libPath}"
           '';
         };
 
