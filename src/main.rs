@@ -56,10 +56,29 @@ impl Roads {
     }
 }
 
+#[derive(Deserialize)]
+pub struct CrabConfig {
+    pub spawn_weight: f64,
+}
+
+impl geng::asset::Load for CrabConfig {
+    fn load(_manager: &geng::asset::Manager, path: &std::path::Path) -> geng::asset::Future<Self> {
+        let path = path.to_owned();
+        file::load_detect(path).boxed_local()
+    }
+    const DEFAULT_EXT: Option<&'static str> = Some("toml");
+}
+
+#[derive(geng::asset::Load)]
+pub struct CrabAssets {
+    pub config: CrabConfig,
+    pub texture: ugli::Texture,
+}
+
 #[derive(geng::asset::Load)]
 struct Assets {
-    pub ferris: ugli::Texture,
-    pub not_ferris: ugli::Texture,
+    #[load(listed_in = "_list.ron")]
+    pub crabs: Vec<CrabAssets>,
     pub ground: ugli::Texture,
     pub obstacles: ugli::Texture,
     #[load(postprocess = "fix_roads")]
@@ -73,7 +92,7 @@ struct Position {
 }
 
 struct Crab {
-    ferris: bool,
+    type_index: usize,
     position: Position,
     animation_time: f32,
 }
@@ -115,9 +134,8 @@ impl Game {
             },
         };
         for _ in 0..crabs_count {
-            result.spawn_crab(false);
+            result.spawn_crab();
         }
-        result.spawn_crab(true);
         result
     }
 
@@ -150,7 +168,7 @@ impl Game {
         self.camera.center = self.camera.center.clamp_aabb(possible_positions);
     }
 
-    fn spawn_crab(&mut self, ferris: bool) {
+    fn spawn_crab(&mut self) {
         let indices: Vec<usize> = (0..self.assets.roads.nodes.len())
             .filter(|index| {
                 !self.assets.roads.nodes[*index].connected.is_empty()
@@ -173,7 +191,12 @@ impl Game {
             None => 0.0,
         };
         self.crabs.push(Crab {
-            ferris,
+            type_index: thread_rng().sample(rand::distributions::WeightedIndex::new(
+                self.assets
+                    .crabs
+                    .iter()
+                    .map(|crab| crab.config.spawn_weight),
+            ).unwrap()),
             position: Position { from, to, distance },
             animation_time: thread_rng().gen(),
         });
@@ -264,11 +287,7 @@ impl geng::State for Game {
             let pos = self.assets.roads.world_pos(&crab.position);
             if crab.position.to.is_some() {
                 draw_sprite(
-                    if crab.ferris {
-                        &self.assets.ferris
-                    } else {
-                        &self.assets.not_ferris
-                    },
+                    &self.assets.crabs[crab.type_index].texture,
                     mat3::translate(
                         pos + vec2(
                             0.0,
@@ -280,11 +299,7 @@ impl geng::State for Game {
                 );
             } else {
                 draw_sprite(
-                    if crab.ferris {
-                        &self.assets.ferris
-                    } else {
-                        &self.assets.not_ferris
-                    },
+                    &self.assets.crabs[crab.type_index].texture,
                     mat3::translate(
                         pos + vec2(
                             0.0,
@@ -426,7 +441,7 @@ impl geng::State for Game {
                         }
                     }
                     geng::Key::Space => {
-                        self.spawn_crab(false);
+                        self.spawn_crab();
                     }
                     geng::Key::R => {
                         self.crabs.clear();
