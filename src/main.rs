@@ -1,5 +1,16 @@
 use geng::prelude::*;
 
+#[derive(Deref)]
+pub struct Toml<T>(#[deref] pub T);
+
+impl<T: DeserializeOwned + 'static> geng::asset::Load for Toml<T> {
+    fn load(_manager: &geng::asset::Manager, path: &std::path::Path) -> geng::asset::Future<Self> {
+        let path = path.to_owned();
+        async move { Ok(Self(file::load_detect(path).await?)) }.boxed_local()
+    }
+    const DEFAULT_EXT: Option<&'static str> = Some("toml");
+}
+
 enum Drag {
     None,
     Detecting { from: vec2<f32>, timer: Timer },
@@ -9,6 +20,7 @@ enum Drag {
 #[derive(Deserialize)]
 struct Config {
     pub crabs: usize,
+    pub free_items: usize,
     pub min_drag_distance: f32,
     pub default_fov: f32,
     pub drag_start_timer: f64, // TODO: Duration
@@ -23,6 +35,10 @@ struct Config {
     pub collision_check_distance: f32,
     pub collision_check_radius: f32,
     pub collision_slow_down: f32,
+    pub crab_hold_item_probability: f64,
+    pub crab_hold_double_item_probability: f64,
+    pub crab_left_hand_pos: vec2<f32>,
+    pub crab_right_hand_pos: vec2<f32>,
 }
 
 type NodeId = usize;
@@ -37,6 +53,14 @@ struct RoadNode {
 #[load(json)]
 struct Roads {
     nodes: Vec<RoadNode>,
+}
+
+#[derive(geng::asset::Load, Serialize, Deserialize, Deref, DerefMut)]
+#[serde(transparent)]
+#[load(json)]
+struct ItemPositions {
+    #[deref]
+    positions: Vec<vec2<f32>>,
 }
 
 fn fix_roads(roads: &mut Roads) {
@@ -61,18 +85,33 @@ pub struct CrabConfig {
     pub spawn_weight: f64,
 }
 
-impl geng::asset::Load for CrabConfig {
-    fn load(_manager: &geng::asset::Manager, path: &std::path::Path) -> geng::asset::Future<Self> {
-        let path = path.to_owned();
-        file::load_detect(path).boxed_local()
-    }
-    const DEFAULT_EXT: Option<&'static str> = Some("toml");
+#[derive(geng::asset::Load)]
+pub struct CrabAssets {
+    pub config: Toml<CrabConfig>,
+    pub texture: ugli::Texture,
+}
+
+#[derive(Deserialize)]
+struct WheelConfig {
+    pub pos: vec2<f32>,
+    pub origin: vec2<f32>,
+    pub base_shift: vec2<f32>,
+    pub radius: f32,
+    pub rotate_speed: f32, // TODO Angle
+    pub cabins: usize,
+    pub swing_origin: vec2<f32>,
+    pub swing_freq: f32,
+    pub swing_amplitude: f32,
+    pub crab_pos: vec2<f32>,
+    pub crab_scale: f32,
 }
 
 #[derive(geng::asset::Load)]
-pub struct CrabAssets {
-    pub config: CrabConfig,
-    pub texture: ugli::Texture,
+struct WheelAssets {
+    pub config: Toml<WheelConfig>,
+    pub base: ugli::Texture,
+    pub wheel: ugli::Texture,
+    pub cabin: ugli::Texture,
 }
 
 #[derive(geng::asset::Load)]
@@ -83,6 +122,10 @@ struct Assets {
     pub obstacles: ugli::Texture,
     #[load(postprocess = "fix_roads")]
     pub roads: Roads,
+    pub wheel: WheelAssets,
+    #[load(listed_in = "_list.ron")]
+    pub items: Vec<ugli::Texture>,
+    pub item_positions: ItemPositions,
 }
 
 struct Position {
@@ -95,11 +138,19 @@ struct Crab {
     type_index: usize,
     position: Position,
     animation_time: f32,
+    left_hand: Option<usize>,
+    right_hand: Option<usize>,
 }
 
 struct Editor {
     drag_from: Option<usize>,
     shown: bool,
+}
+
+struct Item {
+    pub type_index: usize,
+    pub pos_index: usize,
+    pub rot: f32,
 }
 
 struct Game {
@@ -111,12 +162,16 @@ struct Game {
     assets: Assets,
     crabs: Vec<Crab>,
     editor: Editor,
+    current_time: f32,
+    items: Vec<Item>,
 }
 
 impl Game {
     pub fn new(geng: &Geng, assets: Assets, config: Config) -> Self {
         let crabs_count = config.crabs;
+        let free_items = config.free_items;
         let mut result = Self {
+            current_time: 0.0,
             geng: geng.clone(),
             framebuffer_size: vec2::splat(1.0),
             camera: geng::Camera2d {
@@ -132,9 +187,13 @@ impl Game {
                 drag_from: None,
                 shown: false,
             },
+            items: vec![],
         };
         for _ in 0..crabs_count {
             result.spawn_crab();
+        }
+        for _ in 0..free_items {
+            result.spawn_item();
         }
         result
     }
@@ -168,6 +227,19 @@ impl Game {
         self.camera.center = self.camera.center.clamp_aabb(possible_positions);
     }
 
+    fn spawn_item(&mut self) {
+        if let Some(index) = (0..self.assets.item_positions.len())
+            .filter(|index| !self.items.iter().any(|item| item.pos_index == *index))
+            .choose(&mut thread_rng())
+        {
+            self.items.push(Item {
+                pos_index: index,
+                type_index: thread_rng().gen_range(0..self.assets.items.len()),
+                rot: thread_rng().gen_range(0.0..2.0 * f32::PI),
+            });
+        }
+    }
+
     fn spawn_crab(&mut self) {
         let indices: Vec<usize> = (0..self.assets.roads.nodes.len())
             .filter(|index| {
@@ -190,13 +262,31 @@ impl Game {
             }
             None => 0.0,
         };
+        let random_item = || thread_rng().gen_range(0..self.assets.items.len());
+        let (left_hand, right_hand) =
+            if thread_rng().gen_bool(self.config.crab_hold_item_probability) {
+                if thread_rng().gen_bool(self.config.crab_hold_double_item_probability) {
+                    (Some(random_item()), Some(random_item()))
+                } else if thread_rng().gen() {
+                    (Some(random_item()), None)
+                } else {
+                    (None, Some(random_item()))
+                }
+            } else {
+                (None, None)
+            };
         self.crabs.push(Crab {
-            type_index: thread_rng().sample(rand::distributions::WeightedIndex::new(
-                self.assets
-                    .crabs
-                    .iter()
-                    .map(|crab| crab.config.spawn_weight),
-            ).unwrap()),
+            left_hand,
+            right_hand,
+            type_index: thread_rng().sample(
+                rand::distributions::WeightedIndex::new(
+                    self.assets
+                        .crabs
+                        .iter()
+                        .map(|crab| crab.config.spawn_weight),
+                )
+                .unwrap(),
+            ),
             position: Position { from, to, distance },
             animation_time: thread_rng().gen(),
         });
@@ -206,6 +296,8 @@ impl Game {
 impl geng::State for Game {
     fn update(&mut self, delta_time: f64) {
         let delta_time = delta_time as f32;
+
+        self.current_time += delta_time;
 
         if let Drag::Detecting { from, timer } = &self.drag {
             if timer.elapsed().as_secs_f64() > self.config.drag_start_timer {
@@ -285,31 +377,102 @@ impl geng::State for Game {
         for index in crab_indices {
             let crab = &self.crabs[index];
             let pos = self.assets.roads.world_pos(&crab.position);
-            if crab.position.to.is_some() {
-                draw_sprite(
-                    &self.assets.crabs[crab.type_index].texture,
-                    mat3::translate(
-                        pos + vec2(
-                            0.0,
-                            crab.animation_time.cos().abs() * self.config.jump_height,
-                        ),
-                    ) * mat3::rotate(
-                        crab.animation_time.sin() * self.config.jump_rotation_amplitude,
+            let matrix = if crab.position.to.is_some() {
+                mat3::translate(
+                    pos + vec2(
+                        0.0,
+                        crab.animation_time.cos().abs() * self.config.jump_height,
                     ),
-                );
+                ) * mat3::rotate(crab.animation_time.sin() * self.config.jump_rotation_amplitude)
             } else {
-                draw_sprite(
-                    &self.assets.crabs[crab.type_index].texture,
-                    mat3::translate(
-                        pos + vec2(
-                            0.0,
-                            crab.animation_time.cos().abs() * self.config.jump_height,
-                        ),
+                mat3::translate(
+                    pos + vec2(
+                        0.0,
+                        crab.animation_time.cos().abs() * self.config.jump_height,
                     ),
-                );
+                )
+            };
+            draw_sprite(&self.assets.crabs[crab.type_index].texture, matrix);
+            let mut draw_item = |item, pos| {
+                draw_sprite(&self.assets.items[item], matrix * mat3::translate(pos));
+            };
+            if let Some(item) = crab.left_hand {
+                draw_item(item, self.config.crab_left_hand_pos);
+            }
+            if let Some(item) = crab.right_hand {
+                draw_item(item, self.config.crab_right_hand_pos);
             }
         }
         draw_sprite(&self.assets.obstacles, mat3::identity());
+
+        // Ferris wheel
+        let wheel_rotation = self.current_time * self.assets.wheel.config.rotate_speed.to_radians();
+        draw_sprite(
+            &self.assets.wheel.base,
+            mat3::translate(self.assets.wheel.config.pos + self.assets.wheel.config.base_shift),
+        );
+        draw_sprite(
+            &self.assets.wheel.wheel,
+            mat3::translate(self.assets.wheel.config.pos)
+                * mat3::rotate(wheel_rotation)
+                * mat3::translate(-self.assets.wheel.config.origin),
+        );
+        for i in 0..self.assets.wheel.config.cabins {
+            let cabin_pos = self.assets.wheel.config.pos
+                + vec2(self.assets.wheel.config.radius, 0.0).rotate(
+                    2.0 * f32::PI * i as f32 / self.assets.wheel.config.cabins as f32
+                        + wheel_rotation,
+                );
+            let cabin_transform = mat3::translate(cabin_pos)
+                * mat3::rotate(
+                    (2.0 * f32::PI * self.current_time * self.assets.wheel.config.swing_freq).sin()
+                        * self.assets.wheel.config.swing_amplitude.to_radians(),
+                )
+                * mat3::translate(-self.assets.wheel.config.swing_origin);
+            draw_sprite(
+                &self.assets.crabs[i % self.assets.crabs.len()].texture,
+                cabin_transform
+                    * mat3::translate(self.assets.wheel.config.crab_pos)
+                    * mat3::scale_uniform(self.assets.wheel.config.crab_scale),
+            );
+            draw_sprite(&self.assets.wheel.cabin, cabin_transform);
+        }
+
+        for item in &self.items {
+            draw_sprite(
+                &self.assets.items[item.type_index],
+                mat3::translate(self.assets.item_positions[item.pos_index])
+                    * mat3::rotate(item.rot),
+            );
+        }
+
+        // Debug wheel
+        if self.editor.shown {
+            for i in 0..self.assets.wheel.config.cabins {
+                self.geng.draw2d().draw2d(
+                    framebuffer,
+                    &self.camera,
+                    &draw2d::Ellipse::circle(
+                        self.assets.wheel.config.pos
+                            + vec2(self.assets.wheel.config.radius, 0.0).rotate(
+                                2.0 * f32::PI * i as f32 / self.assets.wheel.config.cabins as f32
+                                    + wheel_rotation,
+                            ),
+                        self.config.collision_check_radius / 10.0,
+                        Rgba::RED,
+                    ),
+                );
+            }
+            self.geng.draw2d().draw2d(
+                framebuffer,
+                &self.camera,
+                &draw2d::Ellipse::circle(
+                    self.assets.wheel.config.pos,
+                    self.config.collision_check_radius,
+                    Rgba::RED,
+                ),
+            );
+        }
 
         // for crab in &self.crabs {
         //     let pos = self.assets.roads.world_pos(&crab.position);
@@ -322,6 +485,17 @@ impl geng::State for Game {
 
         // Road editor
         if self.editor.shown {
+            for position in self.assets.item_positions.iter() {
+                self.geng.draw2d().draw2d(
+                    framebuffer,
+                    &self.camera,
+                    &draw2d::Ellipse::circle(
+                        *position,
+                        self.config.road_node_ui_radius,
+                        Rgba::BLUE,
+                    ),
+                );
+            }
             for node in &self.assets.roads.nodes {
                 self.geng.draw2d().draw2d(
                     framebuffer,
@@ -421,6 +595,7 @@ impl geng::State for Game {
                         pos: cursor_world,
                         connected: default(),
                     }),
+                    geng::Key::I => self.assets.item_positions.push(cursor_world),
                     geng::Key::E => {
                         // TODO make engine not send repeated key or smth
                         if self.editor.drag_from.is_none() {
@@ -441,18 +616,32 @@ impl geng::State for Game {
                         }
                     }
                     geng::Key::Space => {
-                        self.spawn_crab();
+                        if self.geng.window().is_key_pressed(geng::Key::LCtrl) {
+                            self.spawn_crab();
+                        } else {
+                            self.spawn_item();
+                        }
                     }
                     geng::Key::R => {
                         self.crabs.clear();
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     geng::Key::S if self.geng.window().is_key_pressed(geng::Key::LCtrl) => {
+                        // save roads
                         let mut f = std::io::BufWriter::new(
                             std::fs::File::create(run_dir().join("assets").join("roads.json"))
                                 .unwrap(),
                         );
                         serde_json::to_writer(&mut f, &self.assets.roads).unwrap();
+
+                        // save item positions
+                        let mut f = std::io::BufWriter::new(
+                            std::fs::File::create(
+                                run_dir().join("assets").join("item_positions.json"),
+                            )
+                            .unwrap(),
+                        );
+                        serde_json::to_writer(&mut f, &self.assets.item_positions).unwrap();
                     }
                     _ => {}
                 }

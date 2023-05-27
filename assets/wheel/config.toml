@@ -1,0 +1,11 @@
+pos = [1700, -1000]
+origin = [8, 53]
+base_shift = [0, 0]
+radius = 1500
+rotate_speed = 5
+cabins = 16
+swing_origin = [14, 230]
+swing_freq = 0.3
+swing_amplitude = 2
+crab_pos = [0, 0]
+crab_scale = 2
