@@ -19,6 +19,7 @@ enum Drag {
 
 #[derive(Deserialize)]
 struct Config {
+    pub click_radius: f32,
     pub crabs: usize,
     pub free_items: usize,
     pub min_drag_distance: f32,
@@ -39,6 +40,7 @@ struct Config {
     pub crab_hold_double_item_probability: f64,
     pub crab_left_hand_pos: vec2<f32>,
     pub crab_right_hand_pos: vec2<f32>,
+    pub types_to_find: usize,
 }
 
 type NodeId = usize;
@@ -126,6 +128,9 @@ struct Assets {
     #[load(listed_in = "_list.ron")]
     pub items: Vec<ugli::Texture>,
     pub item_positions: ItemPositions,
+    #[load(path = "font/Pangolin-Regular.ttf")]
+    pub font: geng::Font,
+    pub to_find_background: ugli::Texture,
 }
 
 struct Position {
@@ -147,8 +152,10 @@ struct Editor {
     shown: bool,
 }
 
+type ItemType = usize;
+
 struct Item {
-    pub type_index: usize,
+    pub type_index: ItemType,
     pub pos_index: usize,
     pub rot: f32,
 }
@@ -164,6 +171,7 @@ struct Game {
     editor: Editor,
     current_time: f32,
     items: Vec<Item>,
+    to_find: Vec<ItemType>,
 }
 
 impl Game {
@@ -181,6 +189,13 @@ impl Game {
             },
             drag: Drag::None,
             crabs: vec![],
+            to_find: rand::seq::index::sample(
+                &mut thread_rng(),
+                assets.items.len(),
+                config.types_to_find,
+            )
+            .into_iter()
+            .collect(),
             config,
             assets,
             editor: Editor {
@@ -291,6 +306,81 @@ impl Game {
             animation_time: thread_rng().gen(),
         });
     }
+
+    fn item_count(&self, item_type: ItemType) -> usize {
+        let ground_items = self
+            .items
+            .iter()
+            .filter(|item| item.type_index == item_type)
+            .count();
+        let crab_items = self
+            .crabs
+            .iter()
+            .flat_map(|crab| [&crab.left_hand, &crab.right_hand])
+            .filter(|hand| **hand == Some(item_type))
+            .count();
+        ground_items + crab_items
+    }
+
+    fn click(&mut self, pos: vec2<f32>) {
+        let cursor_world = self.camera.screen_to_world(self.framebuffer_size, pos);
+        let trigger_radius = self.config.click_radius;
+        let can_take = |item: Option<ItemType>| -> bool {
+            match item {
+                Some(item) => self.to_find.contains(&item),
+                None => false,
+            }
+        };
+        // Ground
+        if let Some(item) = self.items.iter().position(|item| {
+            can_take(Some(item.type_index))
+                && (self.assets.item_positions[item.pos_index] - cursor_world).len()
+                    < trigger_radius
+        }) {
+            self.items.remove(item);
+        }
+
+        // Crab
+        for i in (0..self.crabs.len()).rev() {
+            let crab = &self.crabs[i];
+            let check = |matrix: mat3<f32>| -> bool {
+                let pos = (matrix * vec3(0.0, 0.0, 1.0)).into_2d();
+                (pos - cursor_world).len() < trigger_radius
+            };
+            if check(self.crab_matrix_left_hand(crab)) && can_take(crab.left_hand) {
+                self.crabs[i].left_hand = None;
+            } else if check(self.crab_matrix_right_hand(crab)) && can_take(crab.right_hand) {
+                self.crabs[i].right_hand = None;
+            }
+        }
+    }
+
+    fn crab_matrix(&self, crab: &Crab) -> mat3<f32> {
+        let pos = self.assets.roads.world_pos(&crab.position);
+        if crab.position.to.is_some() {
+            mat3::translate(
+                pos + vec2(
+                    0.0,
+                    crab.animation_time.cos().abs() * self.config.jump_height,
+                ),
+            ) * mat3::rotate(crab.animation_time.sin() * self.config.jump_rotation_amplitude)
+        } else {
+            mat3::translate(
+                pos + vec2(
+                    0.0,
+                    crab.animation_time.cos().abs() * self.config.jump_height,
+                ),
+            )
+        }
+    }
+
+    fn crab_matrix_left_hand(&self, crab: &Crab) -> mat3<f32> {
+        self.crab_matrix(crab) * mat3::translate(self.config.crab_left_hand_pos)
+    }
+
+    fn crab_matrix_right_hand(&self, crab: &Crab) -> mat3<f32> {
+        self.crab_matrix(crab) * mat3::translate(self.config.crab_right_hand_pos)
+    }
 }
 
 impl geng::State for Game {
@@ -376,31 +466,15 @@ impl geng::State for Game {
             .sort_by_key(|index| -r32(self.assets.roads.world_pos(&self.crabs[*index].position).y));
         for index in crab_indices {
             let crab = &self.crabs[index];
-            let pos = self.assets.roads.world_pos(&crab.position);
-            let matrix = if crab.position.to.is_some() {
-                mat3::translate(
-                    pos + vec2(
-                        0.0,
-                        crab.animation_time.cos().abs() * self.config.jump_height,
-                    ),
-                ) * mat3::rotate(crab.animation_time.sin() * self.config.jump_rotation_amplitude)
-            } else {
-                mat3::translate(
-                    pos + vec2(
-                        0.0,
-                        crab.animation_time.cos().abs() * self.config.jump_height,
-                    ),
-                )
-            };
-            draw_sprite(&self.assets.crabs[crab.type_index].texture, matrix);
-            let mut draw_item = |item, pos| {
-                draw_sprite(&self.assets.items[item], matrix * mat3::translate(pos));
-            };
+            draw_sprite(
+                &self.assets.crabs[crab.type_index].texture,
+                self.crab_matrix(crab),
+            );
             if let Some(item) = crab.left_hand {
-                draw_item(item, self.config.crab_left_hand_pos);
+                draw_sprite(&self.assets.items[item], self.crab_matrix_left_hand(crab));
             }
             if let Some(item) = crab.right_hand {
-                draw_item(item, self.config.crab_right_hand_pos);
+                draw_sprite(&self.assets.items[item], self.crab_matrix_right_hand(crab));
             }
         }
         draw_sprite(&self.assets.obstacles, mat3::identity());
@@ -472,6 +546,45 @@ impl geng::State for Game {
                     Rgba::RED,
                 ),
             );
+        }
+
+        let ui_camera = geng::Camera2d {
+            center: vec2::ZERO,
+            rotation: 0.0,
+            fov: 11.0,
+        };
+
+        if !self.to_find.is_empty() {
+            let total_width = self.to_find.len() as f32;
+            self.geng.draw2d().draw2d(
+                framebuffer,
+                &ui_camera,
+                &draw2d::TexturedQuad::new(
+                    Aabb2::point(vec2(0.0, -4.0))
+                        .extend_symmetric(vec2(total_width / 2.0 + 1.0, 0.0))
+                        .extend_up(0.5)
+                        .extend_down(1.3),
+                    &self.assets.to_find_background,
+                ),
+            );
+            for (i, &item) in self.to_find.iter().enumerate() {
+                let number = self.item_count(item);
+                let pos = vec2(-total_width / 2.0 + i as f32 + 0.5, -4.0);
+                self.geng.draw2d().draw2d(
+                    framebuffer,
+                    &ui_camera,
+                    &draw2d::Text::unit(&self.assets.font, number.to_string(), Rgba::BLACK)
+                        .scale_uniform(0.2)
+                        .translate(pos),
+                );
+                self.geng.draw2d().draw2d(
+                    framebuffer,
+                    &ui_camera,
+                    &draw2d::TexturedQuad::unit(&self.assets.items[item])
+                        .scale_uniform(0.5)
+                        .translate(pos + vec2(0.0, -0.7)),
+                );
+            }
         }
 
         // for crab in &self.crabs {
@@ -574,7 +687,7 @@ impl geng::State for Game {
             | geng::Event::TouchEnd(geng::Touch { position, .. }) => {
                 let pos = position.map(|x| x as f32);
                 if let Drag::Detecting { .. } = self.drag {
-                    log::info!("Clicked at {pos:?}");
+                    self.click(pos);
                 }
                 self.drag = Drag::None;
             }
