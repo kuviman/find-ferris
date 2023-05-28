@@ -479,6 +479,14 @@ impl geng::State for Game {
         }
         draw_sprite(&self.assets.obstacles, mat3::identity());
 
+        for item in &self.items {
+            draw_sprite(
+                &self.assets.items[item.type_index],
+                mat3::translate(self.assets.item_positions[item.pos_index])
+                    * mat3::rotate(item.rot),
+            );
+        }
+
         // Ferris wheel
         let wheel_rotation = self.current_time * self.assets.wheel.config.rotate_speed.to_radians();
         draw_sprite(
@@ -510,14 +518,6 @@ impl geng::State for Game {
                     * mat3::scale_uniform(self.assets.wheel.config.crab_scale),
             );
             draw_sprite(&self.assets.wheel.cabin, cabin_transform);
-        }
-
-        for item in &self.items {
-            draw_sprite(
-                &self.assets.items[item.type_index],
-                mat3::translate(self.assets.item_positions[item.pos_index])
-                    * mat3::rotate(item.rot),
-            );
         }
 
         // Debug wheel
