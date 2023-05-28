@@ -81,11 +81,11 @@
         "utils": "utils"
       },
       "locked": {
-        "lastModified": 1685280525,
-        "narHash": "sha256-rlc4YavLep4M8v1ysYW91GN2H59BPHAqNW3MerFHdMk=",
+        "lastModified": 1685288623,
+        "narHash": "sha256-UMBHAIwYWbSrpVJONXa+1HQsggaZRva7FGRRlbS9m7Y=",
         "owner": "geng-engine",
         "repo": "geng",
-        "rev": "a013f35acc9dbb7867d05d02dfb3053a075dc96c",
+        "rev": "d6741d390cd68fc7ace63e04da3d70032be61eac",
         "type": "github"
       },
       "original": {

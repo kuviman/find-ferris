@@ -19,4 +19,4 @@ crab_left_hand_pos = [-50, 10]
 crab_right_hand_pos = [50, 10]
 crab_hold_item_probability = 0.2
 crab_hold_double_item_probability = 0.1
-types_to_find = 3
+types_to_find = 5
